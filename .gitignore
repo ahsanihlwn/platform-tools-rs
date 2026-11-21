@@ -1,0 +1,9 @@
+/target
+/dist
+/tests
+__pycache__/
+*.pyc
+*.tmp
+*.bak
+.DS_Store
+Thumbs.db
