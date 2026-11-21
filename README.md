@@ -16,7 +16,9 @@ Every tool and library in this workspace is written in idiomatic Rust with full 
   - All 15 crates in this workspace are distributed under the permissive **MIT License** ([LICENSE](LICENSE)).
   - Filesystem formatters (`mke2fs`, `make_f2fs`, `make_f2fs_casefold`) are written from scratch in pure Rust directly from public on-disk filesystem specifications (`Ext2/Ext3/Ext4 + JBD2 v2` and `F2FS v1.16.0`).
 - **Native USB, TCP, and UDP Transports**:
-  - Uses pure-Rust asynchronous USB bulk transfers via [`nusb`](https://crates.io/crates/nusb) (`0xFF/0x42/0x01` for ADB, `0xFF/0x42/0x03` for Fastboot) alongside TCP (`5037` / `5555` / `FB01`) and UDP transports.
+  - Uses pure-Rust asynchronous USB bulk transfers via [`nusb`](https://crates.io/crates/nusb) (`0xFF/0x42/0x01` for ADB, `0xFF/0x42/0x03` for Fastboot) alongside TCP (`5037` / `5555` / `FB01`) and UDP transports—no external `AdbWinApi.dll` or `AdbWinUsbApi.dll` required on Windows.
+- **Full `sendrecv_v2` Compression Suite (`Brotli`, `LZ4`, `Zstd`) & 64-Bit `stat_v2`/`ls_v2`**:
+  - Supports all three AOSP `sendrecv_v2` compression codecs (`-z brotli`, `-z lz4`, `-z zstd`, and automatic feature negotiation), powered by [`ahsanihlwn/brotli-rs`](https://github.com/ahsanihlwn/brotli-rs) for pure-Rust RFC 7932 Brotli (`v1.2.0`) compression and decompression, alongside 64-bit `STA2` (`stat_v2`) and `LST2`/`DNT2` (`ls_v2`) directory traversal.
 
 ---
 
@@ -26,7 +28,7 @@ Every tool and library in this workspace is written in idiomatic Rust with full 
 
 | Binary | Crate | Description |
 | :--- | :--- | :--- |
-| **`adb`** | [`crates/adb`](crates/adb) | Android Debug Bridge CLI client & TCP `5037` host server daemon (`1.0.41` / `37.0.3-16887417`). Supports native USB (`nusb`) & TCP `adbd` multiplexing, RSA-2048 `adb keygen` (PKCS#8 PEM + 524-byte Android `RSAPublicKey`), `A_CNXN` / `A_AUTH` handshake, `host:tport:` & `host:transport*`, `shell,v2:` (stdout/stderr demux, exit code propagation, interactive PTY stdin), recursive `push`/`pull` (`STAT`, `LIST`/`DENT`, `SEND`/`RECV`, and `sendrecv_v2` `SND2`/`RCV2` with `LZ4F` frame compression), `forward`, `reverse`, `logcat`, `sideload`, `root`, and `remount`. |
+| **`adb`** | [`crates/adb`](crates/adb) | Android Debug Bridge CLI client & TCP `5037` host server daemon (`1.0.41` / `37.0.3-16887417`). Supports native USB (`nusb`) & TCP `adbd` multiplexing, RSA-2048 `adb keygen` (PKCS#8 PEM + 524-byte Android `RSAPublicKey`), `A_CNXN` / `A_AUTH` handshake, `host:tport:` & `host:transport*`, `shell,v2:` (stdout/stderr demux, exit code propagation, interactive PTY stdin), recursive `push`/`pull` (`STAT`/`STA2`, `LIST`/`DENT` & `LST2`/`DNT2`, `SEND`/`RECV`, and `sendrecv_v2` `SND2`/`RCV2` with `Brotli` via [`brotli-rs`](https://github.com/ahsanihlwn/brotli-rs), `LZ4F`, and `Zstd`), `forward`, `reverse`, `logcat`, `sideload`, `root`, and `remount`. |
 | **`fastboot`** | [`crates/fastboot`](crates/fastboot) | Android Fastboot flashing, bootloader, and logical partition tool (`37.0.3-16887417`). Supports USB (`nusb`), TCP (`FB01`), and UDP transports, automatic sparse splitting (`-S`), `AVB0` `vbmeta` patching (`--disable-verity`, `--disable-verification`), `boot.img` (`v0`–`v4`) & `vendor_boot.img` (`v3`–`v4`) live repacking, `format:ext4` / `format:f2fs`, `liblp` dynamic partitions (`create/delete/resize-logical-partition`, `wipe-super`), `snapshot-update`, `flashall`, and `update`. |
 | **`mke2fs`** | [`crates/mke2fs`](crates/mke2fs) | Pure-Rust Ext2 / Ext3 / Ext4 + JBD2 journal formatter (`1.47.2` CLI compatible). Supports `-E android_sparse`, `-O casefold`, `-b 1024/2048/4096`, multi-group metadata layout, and `-d <root_dir>` recursive directory tree population. |
 | **`make_f2fs`** | [`crates/make_f2fs`](crates/make_f2fs) | Pure-Rust F2FS `v1.16.0` formatter supporting raw and Android sparse (`-S`) output, user/group/project quotas (`-q`), casefolding (`-C utf8`), encryption, compression, extra attributes, and verity. |
@@ -49,10 +51,12 @@ Every tool and library in this workspace is written in idiomatic Rust with full 
 
 ---
 
-## Upstream AOSP References
+## Related Pure-Rust Projects & Upstream AOSP References
 
-Key upstream Android Open Source Project (AOSP) repositories and specifications:
+### Pure-Rust Ecosystem
+- **[`ahsanihlwn/brotli-rs`](https://github.com/ahsanihlwn/brotli-rs)**: Pure-Rust, MIT-licensed implementation of Google's Brotli (`v1.2.0`, RFC 7932) compression and decompression library, integrated into `crates/adb` for `sendrecv_v2_brotli` (`adb push/pull -z brotli`).
 
+### Upstream AOSP Repositories
 - **AOSP Platform Build & SDK Packaging**: [`platform/development` (`build/Android.bp`)](https://android.googlesource.com/platform/development/+/master/build/Android.bp) & [`platform/build`](https://android.googlesource.com/platform/build)
 - **Android Debug Bridge (`adb`)**: [`platform/packages/modules/adb`](https://android.googlesource.com/platform/packages/modules/adb)
 - **Fastboot, `libsparse`, `mkbootimg`, and `liblp`**: [`platform/system/core`](https://android.googlesource.com/platform/system/core)

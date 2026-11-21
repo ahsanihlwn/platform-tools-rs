@@ -7,6 +7,7 @@ name = "adb"
 version = "37.0.3"
 dependencies = [
  "base64",
+ "brotli-rs",
  "bytes",
  "getrandom 0.4.3",
  "lz4_flex",
@@ -18,6 +19,7 @@ dependencies = [
  "tempfile",
  "thiserror",
  "tokio",
+ "zstd",
 ]
 
 [[package]]
@@ -120,6 +122,11 @@ dependencies = [
 ]
 
 [[package]]
+name = "brotli-rs"
+version = "1.2.0"
+source = "git+https://github.com/ahsanihlwn/brotli-rs#66be07ddee777603df4481515216e56aa2466cb6"
+
+[[package]]
 name = "bumpalo"
 version = "3.20.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -138,6 +145,8 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "02f0e023adb368345ce0ca6cdfc0f24a06554468d0e8503e14a0841de79bfa69"
 dependencies = [
  "find-msvc-tools",
+ "jobserver",
+ "libc",
  "shlex",
 ]
 
@@ -455,6 +464,16 @@ checksum = "06d3a048d09fbb6597dbf7c69f40d14df4a49487db1487191618c893fc3b1c26"
 dependencies = [
  "core-foundation-sys",
  "mach2",
+]
+
+[[package]]
+name = "jobserver"
+version = "0.1.35"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1c00acbd29eabad4a2392fa0e921c874934dbbf4194312ad20f04a0ed67a3cb3"
+dependencies = [
+ "getrandom 0.4.3",
+ "libc",
 ]
 
 [[package]]
@@ -1246,4 +1265,32 @@ dependencies = [
  "crc32fast",
  "log",
  "simd-adler32",
+]
+
+[[package]]
+name = "zstd"
+version = "0.13.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "50adf04cf3ec914b0b9905c9dde90c80fe74bfd701e331fc80a39c512c525278"
+dependencies = [
+ "zstd-safe",
+]
+
+[[package]]
+name = "zstd-safe"
+version = "7.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "498d94ad68720c89b4fbe41b9090850651e68cb2dd9210ce7ffbff3a94653819"
+dependencies = [
+ "zstd-sys",
+]
+
+[[package]]
+name = "zstd-sys"
+version = "2.1.3+zstd.1.5.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f729a06d0257428fd9d997ac8db7e1407bd0262ab016b085b36bc52957c0052d"
+dependencies = [
+ "cc",
+ "pkg-config",
 ]

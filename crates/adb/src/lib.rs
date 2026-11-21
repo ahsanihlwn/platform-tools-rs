@@ -40,4 +40,35 @@ mod tests {
         assert_eq!(cfg.target.serial.as_deref(), Some("127.0.0.1:5555"));
         assert!(matches!(cfg.command, AdbCommand::Shell { .. }));
     }
+
+    #[test]
+    fn test_sendrecv_v2_compression_codecs() {
+        use std::io::{Read, Write};
+        let sample = b"Android Debug Bridge sendrecv_v2 compression payload test! ".repeat(256);
+
+        // 1. Brotli via ahsanihlwn/brotli-rs
+        let br_compressed = brotli_rs::io::compress(
+            &sample,
+            1,
+            22,
+            brotli_rs::enc::params::BrotliEncoderMode::Generic,
+        )
+        .unwrap();
+        let br_decompressed = brotli_rs::io::decompress(&br_compressed).unwrap();
+        assert_eq!(br_decompressed, sample);
+
+        // 2. LZ4 Frame
+        let mut lz4_enc = lz4_flex::frame::FrameEncoder::new(Vec::new());
+        lz4_enc.write_all(&sample).unwrap();
+        let lz4_compressed = lz4_enc.finish().unwrap();
+        let mut lz4_dec = lz4_flex::frame::FrameDecoder::new(lz4_compressed.as_slice());
+        let mut lz4_decompressed = Vec::new();
+        lz4_dec.read_to_end(&mut lz4_decompressed).unwrap();
+        assert_eq!(lz4_decompressed, sample);
+
+        // 3. Zstd
+        let zstd_compressed = zstd::stream::encode_all(sample.as_slice(), 1).unwrap();
+        let zstd_decompressed = zstd::stream::decode_all(zstd_compressed.as_slice()).unwrap();
+        assert_eq!(zstd_decompressed, sample);
+    }
 }

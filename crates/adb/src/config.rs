@@ -182,16 +182,47 @@ impl Default for AdbCliConfig {
     }
 }
 
+#[cfg(windows)]
+fn host_os_version_string() -> String {
+    #[repr(C)]
+    struct OsVersionInfoW {
+        dw_os_version_info_size: u32,
+        dw_major_version: u32,
+        dw_minor_version: u32,
+        dw_build_number: u32,
+        dw_platform_id: u32,
+        sz_csd_version: [u16; 128],
+    }
+
+    #[link(name = "ntdll")]
+    extern "system" {
+        fn RtlGetVersion(lp_version_information: *mut OsVersionInfoW) -> i32;
+    }
+
+    unsafe {
+        let mut info: OsVersionInfoW = std::mem::zeroed();
+        info.dw_os_version_info_size = std::mem::size_of::<OsVersionInfoW>() as u32;
+        if RtlGetVersion(&mut info) == 0 {
+            return format!(
+                "Windows {}.{}.{}",
+                info.dw_major_version, info.dw_minor_version, info.dw_build_number
+            );
+        }
+    }
+    "Windows".to_string()
+}
+
+#[cfg(not(windows))]
+fn host_os_version_string() -> String {
+    format!("{} ({})", std::env::consts::OS, std::env::consts::ARCH)
+}
+
 /// Returns the 4-line `adb --version` / `adb version` output matching `platform-tools/adb` v37.0.3-16887417.
 pub fn version_output() -> String {
     let exe = std::env::current_exe()
         .map(|p| p.display().to_string())
         .unwrap_or_else(|_| "adb".to_string());
-    let os_line = format!(
-        "{} ({})",
-        std::env::consts::OS,
-        std::env::consts::ARCH
-    );
+    let os_line = host_os_version_string();
     format!(
         "Android Debug Bridge version {ADB_PROTOCOL_VERSION_STR}\n\
          Version {PLATFORM_TOOLS_VERSION_FULL}\n\

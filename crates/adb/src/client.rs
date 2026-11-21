@@ -219,7 +219,48 @@ fn run_shell_command(
     run_device_stream_to_stdout(cfg, &service)
 }
 
-/// Queries remote file `(mode, size, mtime)` via `STAT`. Returns `(0, 0, 0)` if path does not exist.
+/// Compression mode negotiated for `sync:` file transfers (`SEND`/`RECV` v1 vs `SND2`/`RCV2` v2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SyncCompression {
+    /// Classic `SEND` / `RECV` (`v1`, uncompressed).
+    V1None,
+    /// `SND2` / `RCV2` (`sendrecv_v2`) uncompressed (`SYNC_FLAG_NONE = 0`).
+    V2None,
+    /// `SND2` / `RCV2` (`sendrecv_v2_brotli`) via `brotli_rs` (`SYNC_FLAG_BROTLI = 1`).
+    V2Brotli,
+    /// `SND2` / `RCV2` (`sendrecv_v2_lz4`) via `lz4_flex::frame` (`SYNC_FLAG_LZ4 = 2`).
+    V2Lz4,
+    /// `SND2` / `RCV2` (`sendrecv_v2_zstd`) via `zstd` (`SYNC_FLAG_ZSTD = 4`).
+    V2Zstd,
+}
+
+fn resolve_sync_compression(cfg: &AdbCliConfig, requested: Option<&str>) -> SyncCompression {
+    if !device_supports_feature(cfg, "sendrecv_v2") {
+        return SyncCompression::V1None;
+    }
+    match requested {
+        Some("none") => SyncCompression::V1None,
+        Some("brotli") if device_supports_feature(cfg, "sendrecv_v2_brotli") => {
+            SyncCompression::V2Brotli
+        }
+        Some("lz4") if device_supports_feature(cfg, "sendrecv_v2_lz4") => SyncCompression::V2Lz4,
+        Some("zstd") if device_supports_feature(cfg, "sendrecv_v2_zstd") => SyncCompression::V2Zstd,
+        None | Some("any") => {
+            if device_supports_feature(cfg, "sendrecv_v2_lz4") {
+                SyncCompression::V2Lz4
+            } else if device_supports_feature(cfg, "sendrecv_v2_zstd") {
+                SyncCompression::V2Zstd
+            } else if device_supports_feature(cfg, "sendrecv_v2_brotli") {
+                SyncCompression::V2Brotli
+            } else {
+                SyncCompression::V1None
+            }
+        }
+        _ => SyncCompression::V1None,
+    }
+}
+
+/// Queries remote file `(mode, size, mtime)` via `STAT` (16-byte v1). Returns `(0, 0, 0)` if path does not exist.
 pub fn sync_stat(
     sync_stream: &mut TcpStream,
     remote_path: &str,
@@ -242,7 +283,34 @@ pub fn sync_stat(
     Ok((mode, size, mtime))
 }
 
-/// Lists remote directory entries via `LIST` -> `DENT`* -> `DONE`.
+/// Queries remote file 64-bit `(mode, size, mtime)` via `STA2` (72-byte `stat_v2`).
+pub fn sync_stat_v2(
+    sync_stream: &mut TcpStream,
+    remote_path: &str,
+) -> Result<(u32, u64, i64), AdbError> {
+    let mut hdr = [0u8; 8];
+    hdr[0..4].copy_from_slice(SYNC_STA2);
+    hdr[4..8].copy_from_slice(&(remote_path.len() as u32).to_le_bytes());
+    sync_stream.write_all(&hdr)?;
+    sync_stream.write_all(remote_path.as_bytes())?;
+    sync_stream.flush()?;
+
+    let mut resp = [0u8; 72];
+    sync_stream.read_exact(&mut resp)?;
+    if &resp[0..4] != SYNC_STA2 {
+        return Err(AdbError::Protocol("invalid STA2 response".into()));
+    }
+    let err_no = u32::from_le_bytes(resp[4..8].try_into().unwrap());
+    if err_no != 0 {
+        return Ok((0, 0, 0));
+    }
+    let mode = u32::from_le_bytes(resp[24..28].try_into().unwrap());
+    let size = u64::from_le_bytes(resp[40..48].try_into().unwrap());
+    let mtime = i64::from_le_bytes(resp[56..64].try_into().unwrap());
+    Ok((mode, size, mtime))
+}
+
+/// Lists remote directory entries via `LIST` -> `DENT`* -> `DONE` (20-byte v1).
 pub fn sync_list(
     sync_stream: &mut TcpStream,
     remote_dir: &str,
@@ -289,13 +357,60 @@ pub fn sync_list(
     Ok(entries)
 }
 
-/// Sends a file over an open `sync:` stream using either `SEND` (v1) or `SND2` (`sendrecv_v2` with optional LZ4 compression).
+/// Lists remote directory entries via `LST2` -> `DNT2`* -> `DONE` (76-byte `ls_v2`).
+pub fn sync_list_v2(
+    sync_stream: &mut TcpStream,
+    remote_dir: &str,
+) -> Result<Vec<SyncDent>, AdbError> {
+    let mut hdr = [0u8; 8];
+    hdr[0..4].copy_from_slice(SYNC_LST2);
+    hdr[4..8].copy_from_slice(&(remote_dir.len() as u32).to_le_bytes());
+    sync_stream.write_all(&hdr)?;
+    sync_stream.write_all(remote_dir.as_bytes())?;
+    sync_stream.flush()?;
+
+    let mut entries = Vec::new();
+    loop {
+        let mut dhdr = [0u8; 76];
+        sync_stream.read_exact(&mut dhdr)?;
+        let id = &dhdr[0..4];
+        if id == SYNC_DONE {
+            break;
+        }
+        if id != SYNC_DNT2 {
+            return Err(AdbError::Protocol(format!(
+                "unexpected sync LST2 response '{:?}'",
+                id
+            )));
+        }
+        let mode = u32::from_le_bytes(dhdr[24..28].try_into().unwrap());
+        let size = u64::from_le_bytes(dhdr[40..48].try_into().unwrap());
+        let mtime = i64::from_le_bytes(dhdr[56..64].try_into().unwrap());
+        let namelen = u32::from_le_bytes(dhdr[72..76].try_into().unwrap()) as usize;
+        let mut name_buf = vec![0u8; namelen];
+        if namelen > 0 {
+            sync_stream.read_exact(&mut name_buf)?;
+        }
+        let name = String::from_utf8_lossy(&name_buf).into_owned();
+        if name != "." && name != ".." {
+            entries.push(SyncDent {
+                mode,
+                size,
+                mtime,
+                name,
+            });
+        }
+    }
+    Ok(entries)
+}
+
+/// Sends a file over an open `sync:` stream using `SEND` (v1) or `SND2` (`sendrecv_v2` with LZ4, Brotli, or Zstd compression).
 fn sync_send_one_file(
     sync_stream: &mut TcpStream,
     local_path: &Path,
     remote_path: &str,
     dry_run: bool,
-    use_v2_lz4: bool,
+    comp: SyncCompression,
 ) -> Result<u64, AdbError> {
     let meta = fs::metadata(local_path)?;
     let mtime = meta
@@ -307,18 +422,23 @@ fn sync_send_one_file(
     let content = fs::read(local_path)?;
     let total_bytes = content.len() as u64;
 
-    if dry_run && !use_v2_lz4 {
+    if dry_run && comp == SyncCompression::V1None {
         return Ok(total_bytes);
     }
 
-    if use_v2_lz4 {
+    if comp != SyncCompression::V1None {
         let mut hdr1 = [0u8; 8];
         hdr1[0..4].copy_from_slice(SYNC_SND2);
         hdr1[4..8].copy_from_slice(&(remote_path.len() as u32).to_le_bytes());
         sync_stream.write_all(&hdr1)?;
         sync_stream.write_all(remote_path.as_bytes())?;
 
-        let mut flags = SYNC_FLAG_LZ4;
+        let mut flags = match comp {
+            SyncCompression::V2Brotli => SYNC_FLAG_BROTLI,
+            SyncCompression::V2Lz4 => SYNC_FLAG_LZ4,
+            SyncCompression::V2Zstd => SYNC_FLAG_ZSTD,
+            _ => SYNC_FLAG_NONE,
+        };
         if dry_run {
             flags |= SYNC_FLAG_DRY_RUN;
         }
@@ -328,13 +448,26 @@ fn sync_send_one_file(
         hdr2[8..12].copy_from_slice(&flags.to_le_bytes());
         sync_stream.write_all(&hdr2)?;
 
-        let mut enc = lz4_flex::frame::FrameEncoder::new(Vec::new());
-        enc.write_all(&content)?;
-        let compressed_frame = enc
-            .finish()
-            .map_err(|e| AdbError::Protocol(format!("LZ4 frame encode error: {e}")))?;
+        let payload_stream = match comp {
+            SyncCompression::V2Brotli => brotli_rs::io::compress(
+                &content,
+                1,
+                22,
+                brotli_rs::enc::params::BrotliEncoderMode::Generic,
+            )
+            .map_err(|e| AdbError::Protocol(format!("Brotli encode error: {e}")))?,
+            SyncCompression::V2Lz4 => {
+                let mut enc = lz4_flex::frame::FrameEncoder::new(Vec::new());
+                enc.write_all(&content)?;
+                enc.finish()
+                    .map_err(|e| AdbError::Protocol(format!("LZ4 frame encode error: {e}")))?
+            }
+            SyncCompression::V2Zstd => zstd::stream::encode_all(content.as_slice(), 1)
+                .map_err(|e| AdbError::Protocol(format!("Zstd encode error: {e}")))?,
+            _ => content,
+        };
 
-        for chunk in compressed_frame.chunks(SYNC_DATA_MAX) {
+        for chunk in payload_stream.chunks(SYNC_DATA_MAX) {
             let mut dhdr = [0u8; 8];
             dhdr[0..4].copy_from_slice(SYNC_DATA);
             dhdr[4..8].copy_from_slice(&(chunk.len() as u32).to_le_bytes());
@@ -396,7 +529,7 @@ fn sync_push_recursive(
     local_path: &Path,
     remote_path: &str,
     dry_run: bool,
-    use_v2_lz4: bool,
+    comp: SyncCompression,
 ) -> Result<(u64, usize), AdbError> {
     let meta = fs::metadata(local_path)?;
     if meta.is_dir() {
@@ -413,35 +546,41 @@ fn sync_push_recursive(
                 &entry.path(),
                 &child_remote,
                 dry_run,
-                use_v2_lz4,
+                comp,
             )?;
             total_bytes += b;
             total_files += c;
         }
         Ok((total_bytes, total_files))
     } else {
-        let b = sync_send_one_file(sync_stream, local_path, remote_path, dry_run, use_v2_lz4)?;
+        let b = sync_send_one_file(sync_stream, local_path, remote_path, dry_run, comp)?;
         Ok((b, 1))
     }
 }
 
-/// Receives a single file over an open `sync:` stream using `RECV` (v1) or `RCV2` (`sendrecv_v2` with LZ4 decompression).
+/// Receives a single file over an open `sync:` stream using `RECV` (v1) or `RCV2` (`sendrecv_v2` with LZ4, Brotli, or Zstd decompression).
 fn sync_recv_one_file(
     sync_stream: &mut TcpStream,
     remote_path: &str,
     local_path: &Path,
-    use_v2_lz4: bool,
+    comp: SyncCompression,
 ) -> Result<u64, AdbError> {
-    if use_v2_lz4 {
+    if comp != SyncCompression::V1None {
         let mut hdr1 = [0u8; 8];
         hdr1[0..4].copy_from_slice(SYNC_RCV2);
         hdr1[4..8].copy_from_slice(&(remote_path.len() as u32).to_le_bytes());
         sync_stream.write_all(&hdr1)?;
         sync_stream.write_all(remote_path.as_bytes())?;
 
+        let flags = match comp {
+            SyncCompression::V2Brotli => SYNC_FLAG_BROTLI,
+            SyncCompression::V2Lz4 => SYNC_FLAG_LZ4,
+            SyncCompression::V2Zstd => SYNC_FLAG_ZSTD,
+            _ => SYNC_FLAG_NONE,
+        };
         let mut hdr2 = [0u8; 8];
         hdr2[0..4].copy_from_slice(SYNC_RCV2);
-        hdr2[4..8].copy_from_slice(&SYNC_FLAG_LZ4.to_le_bytes());
+        hdr2[4..8].copy_from_slice(&flags.to_le_bytes());
         sync_stream.write_all(&hdr2)?;
         sync_stream.flush()?;
     } else {
@@ -485,14 +624,19 @@ fn sync_recv_one_file(
             )));
         }
     }
-    let out = if use_v2_lz4 {
-        let mut dec = lz4_flex::frame::FrameDecoder::new(raw_stream.as_slice());
-        let mut decompressed = Vec::new();
-        dec.read_to_end(&mut decompressed)
-            .map_err(|e| AdbError::Protocol(format!("LZ4 frame decompress error: {e}")))?;
-        decompressed
-    } else {
-        raw_stream
+    let out = match comp {
+        SyncCompression::V2Brotli => brotli_rs::io::decompress(&raw_stream)
+            .map_err(|e| AdbError::Protocol(format!("Brotli decompress error: {e}")))?,
+        SyncCompression::V2Lz4 => {
+            let mut dec = lz4_flex::frame::FrameDecoder::new(raw_stream.as_slice());
+            let mut decompressed = Vec::new();
+            dec.read_to_end(&mut decompressed)
+                .map_err(|e| AdbError::Protocol(format!("LZ4 frame decompress error: {e}")))?;
+            decompressed
+        }
+        SyncCompression::V2Zstd => zstd::stream::decode_all(raw_stream.as_slice())
+            .map_err(|e| AdbError::Protocol(format!("Zstd decompress error: {e}")))?,
+        _ => raw_stream,
     };
     let n = out.len() as u64;
     fs::write(local_path, &out)?;
@@ -504,13 +648,23 @@ fn sync_pull_recursive(
     sync_stream: &mut TcpStream,
     remote_path: &str,
     local_path: &Path,
-    use_v2_lz4: bool,
+    comp: SyncCompression,
+    use_stat_v2: bool,
+    use_ls_v2: bool,
 ) -> Result<(u64, usize), AdbError> {
-    // Check via STAT if `remote_path` is a directory (`S_IFDIR = 0o040000`)
-    if let Ok((mode, _, _)) = sync_stat(sync_stream, remote_path) {
+    let mode_opt = if use_stat_v2 {
+        sync_stat_v2(sync_stream, remote_path).ok().map(|(m, _, _)| m)
+    } else {
+        sync_stat(sync_stream, remote_path).ok().map(|(m, _, _)| m)
+    };
+    if let Some(mode) = mode_opt {
         if (mode & 0o170000) == 0o040000 {
             fs::create_dir_all(local_path)?;
-            let dents = sync_list(sync_stream, remote_path)?;
+            let dents = if use_ls_v2 {
+                sync_list_v2(sync_stream, remote_path)?
+            } else {
+                sync_list(sync_stream, remote_path)?
+            };
             let mut total_bytes = 0u64;
             let mut total_files = 0usize;
             let base_remote = remote_path.trim_end_matches('/');
@@ -518,13 +672,18 @@ fn sync_pull_recursive(
                 let child_remote = format!("{base_remote}/{}", d.name);
                 let child_local = local_path.join(&d.name);
                 if d.is_dir() {
-                    let (b, c) =
-                        sync_pull_recursive(sync_stream, &child_remote, &child_local, use_v2_lz4)?;
+                    let (b, c) = sync_pull_recursive(
+                        sync_stream,
+                        &child_remote,
+                        &child_local,
+                        comp,
+                        use_stat_v2,
+                        use_ls_v2,
+                    )?;
                     total_bytes += b;
                     total_files += c;
                 } else {
-                    let b =
-                        sync_recv_one_file(sync_stream, &child_remote, &child_local, use_v2_lz4)?;
+                    let b = sync_recv_one_file(sync_stream, &child_remote, &child_local, comp)?;
                     total_bytes += b;
                     total_files += 1;
                 }
@@ -533,7 +692,7 @@ fn sync_pull_recursive(
         }
     }
 
-    let b = sync_recv_one_file(sync_stream, remote_path, local_path, use_v2_lz4)?;
+    let b = sync_recv_one_file(sync_stream, remote_path, local_path, comp)?;
     Ok((b, 1))
 }
 
@@ -714,8 +873,7 @@ async fn execute_command(cfg: &AdbCliConfig) -> Result<i32, AdbError> {
             quiet,
             compression,
         } => {
-            let use_v2_lz4 = matches!(compression.as_deref(), Some("lz4") | Some("any"))
-                && device_supports_feature(cfg, "sendrecv_v2");
+            let comp = resolve_sync_compression(cfg, compression.as_deref());
             let mut sync_stream = open_device_service(cfg, &cfg.target, "sync:")?;
             let mut total = 0u64;
             let mut count = 0usize;
@@ -734,7 +892,7 @@ async fn execute_command(cfg: &AdbCliConfig) -> Result<i32, AdbError> {
                     src,
                     &target_remote,
                     *dry_run,
-                    use_v2_lz4,
+                    comp,
                 )?;
                 total += b;
                 count += c;
@@ -753,8 +911,9 @@ async fn execute_command(cfg: &AdbCliConfig) -> Result<i32, AdbError> {
             quiet,
             compression,
         } => {
-            let use_v2_lz4 = matches!(compression.as_deref(), Some("lz4") | Some("any"))
-                && device_supports_feature(cfg, "sendrecv_v2");
+            let comp = resolve_sync_compression(cfg, compression.as_deref());
+            let use_stat_v2 = device_supports_feature(cfg, "stat_v2");
+            let use_ls_v2 = device_supports_feature(cfg, "ls_v2");
             let mut sync_stream = open_device_service(cfg, &cfg.target, "sync:")?;
             let mut total = 0u64;
             let mut count = 0usize;
@@ -765,7 +924,14 @@ async fn execute_command(cfg: &AdbCliConfig) -> Result<i32, AdbError> {
                 } else {
                     local.clone()
                 };
-                let (b, c) = sync_pull_recursive(&mut sync_stream, r, &dest, use_v2_lz4)?;
+                let (b, c) = sync_pull_recursive(
+                    &mut sync_stream,
+                    r,
+                    &dest,
+                    comp,
+                    use_stat_v2,
+                    use_ls_v2,
+                )?;
                 total += b;
                 count += c;
             }
@@ -801,8 +967,9 @@ async fn execute_command(cfg: &AdbCliConfig) -> Result<i32, AdbError> {
                 .unwrap_or_else(|| "base.apk".to_string());
             let remote_tmp = format!("/data/local/tmp/{fname}");
             {
+                let comp = resolve_sync_compression(cfg, None);
                 let mut sync_stream = open_device_service(cfg, &cfg.target, "sync:")?;
-                let _ = sync_send_one_file(&mut sync_stream, apk, &remote_tmp, false, false)?;
+                let _ = sync_send_one_file(&mut sync_stream, apk, &remote_tmp, false, comp)?;
                 sync_quit(&mut sync_stream);
             }
             println!("Performing Push Install");

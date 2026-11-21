@@ -28,6 +28,7 @@ repository = "https://github.com/ahsanihlwn/platform-tools-rs"
 
 [workspace.dependencies]
 base64 = "0.22"
+brotli-rs = { git = "https://github.com/ahsanihlwn/brotli-rs" }
 bytes = "1.11"
 crc32fast = "1.4"
 getrandom = "0.4"
@@ -42,3 +43,4 @@ thiserror = "2.0"
 tempfile = "3.14"
 tokio = { version = "1.43", features = ["full"] }
 zip = { version = "2.2", default-features = false, features = ["deflate"] }
+zstd = "0.13"

@@ -13,6 +13,7 @@ path = "src/main.rs"
 
 [dependencies]
 base64.workspace = true
+brotli-rs.workspace = true
 bytes.workspace = true
 getrandom.workspace = true
 lz4_flex.workspace = true
@@ -23,6 +24,7 @@ sha1.workspace = true
 sha2.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
+zstd.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
