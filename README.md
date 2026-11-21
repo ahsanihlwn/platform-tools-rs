@@ -4,38 +4,37 @@
 [![Rust](https://img.shields.io/badge/Rust-1.85%2B-orange.svg)](Cargo.toml)
 [![Baseline](https://img.shields.io/badge/AOSP%20platform--tools-37.0.3--16887417-green.svg)](config/source.properties)
 
-A complete, **100% Pure Native Rust**, **MIT-licensed** implementation of the Android SDK `platform-tools` suite (targeting AOSP **`v37.0.3-16887417`**, ADB protocol **`1.0.41`**).
+A Rust reimplementation of the Android SDK `platform-tools` suite targeting AOSP **`37.0.3-16887417`** (ADB protocol **`1.0.41`**).
 
-Every tool and library in this workspace is written in idiomatic Rust with full CLI, wire-protocol, and on-disk format compatibility with the official Android SDK `platform-tools` distribution—without depending on external C++ Android libraries or GPL-licensed code.
+Every CLI tool and supporting library in this workspace is written in native Rust with full CLI, wire-protocol, and on-disk format compatibility with the official Android SDK `platform-tools` distribution, with no external C++ Android runtime libraries or Windows WinUSB wrapper DLLs required.
 
 ---
 
-## Highlights
+## Key Features
 
-- **100% MIT Licensed**:
-  - All 15 crates in this workspace are distributed under the permissive **MIT License** ([LICENSE](LICENSE)).
-  - Filesystem formatters (`mke2fs`, `make_f2fs`, `make_f2fs_casefold`) are written from scratch in pure Rust directly from public on-disk filesystem specifications (`Ext2/Ext3/Ext4 + JBD2 v2` and `F2FS v1.16.0`).
 - **Native USB, TCP, and UDP Transports**:
-  - Uses pure-Rust asynchronous USB bulk transfers via [`nusb`](https://crates.io/crates/nusb) (`0xFF/0x42/0x01` for ADB, `0xFF/0x42/0x03` for Fastboot) alongside TCP (`5037` / `5555` / `FB01`) and UDP transports—no external `AdbWinApi.dll` or `AdbWinUsbApi.dll` required on Windows.
-- **Full `sendrecv_v2` Compression Suite (`Brotli`, `LZ4`, `Zstd`) & 64-Bit `stat_v2`/`ls_v2`**:
-  - Supports all three AOSP `sendrecv_v2` compression codecs (`-z brotli`, `-z lz4`, `-z zstd`, and automatic feature negotiation), powered by [`ahsanihlwn/brotli-rs`](https://github.com/ahsanihlwn/brotli-rs) for pure-Rust RFC 7932 Brotli (`v1.2.0`) compression and decompression, alongside 64-bit `STA2` (`stat_v2`) and `LST2`/`DNT2` (`ls_v2`) directory traversal.
+  - Uses asynchronous USB bulk transfers via [`nusb`](https://crates.io/crates/nusb) (`0xFF/0x42/0x01` for ADB, `0xFF/0x42/0x03` for Fastboot) alongside TCP (`5037` / `5555` / `FB01`) and UDP transports—no `AdbWinApi.dll` or `AdbWinUsbApi.dll` needed on Windows.
+- **Full `adb` Client & Host Server (`1.0.41`)**:
+  - Supports RSA-2048 authentication (`adb keygen` + `A_AUTH`), `host:tport:` & `host:transport*`, `shell,v2:` (stdout/stderr demux, exit code propagation, interactive PTY stdin), recursive `push`/`pull`/`sync` with 64-bit `STA2`/`LST2` and `sendrecv_v2` compression (`Brotli` via [`ahsanihlwn/brotli-rs`](https://github.com/ahsanihlwn/brotli-rs), `LZ4F`, `Zstd`), `install`/`install-multiple`, `forward`/`reverse`, `logcat`, `bugreport`, and `sideload`/`sideload-host`.
+- **Standalone Partition, Boot, & Image Tools**:
+  - Built-in Rust implementations of `mke2fs` (`Ext2/Ext3/Ext4 + JBD2`), `make_f2fs` / `make_f2fs_casefold` (`F2FS v1.16.0`), `android-sparse`, `android-avb` (`vbmeta`), `android-bootimg` (`boot.img` v0–v4 & `vendor_boot.img` v3–v4), `android-lp` (`super` dynamic partitions), `etc1tool`, `hprof-conv`, and `sqlite3`.
 
 ---
 
 ## Workspace Architecture (15 Crates)
 
-### 8 Native CLI Binaries
+### 8 CLI Binaries
 
 | Binary | Crate | Description |
 | :--- | :--- | :--- |
-| **`adb`** | [`crates/adb`](crates/adb) | Android Debug Bridge CLI client & TCP `5037` host server daemon (`1.0.41` / `37.0.3-16887417`). Supports native USB (`nusb`) & TCP `adbd` multiplexing, RSA-2048 `adb keygen` (PKCS#8 PEM + 524-byte Android `RSAPublicKey`), `A_CNXN` / `A_AUTH` handshake, `host:tport:` & `host:transport*`, `shell,v2:` (stdout/stderr demux, exit code propagation, interactive PTY stdin), recursive `push`/`pull`/`sync` (`STAT`/`STA2`, `LIST`/`DENT` & `LST2`/`DNT2`, `SEND`/`RECV`, and `sendrecv_v2` `SND2`/`RCV2` with `Brotli` via [`brotli-rs`](https://github.com/ahsanihlwn/brotli-rs), `LZ4F`, and `Zstd`), `install`/`install-multiple`/`install-multi-package`, `forward`, `reverse`, `logcat`, `bugreport`, `sideload`/`sideload-host`, `root`, and `remount`. |
-| **`fastboot`** | [`crates/fastboot`](crates/fastboot) | Android Fastboot flashing, bootloader, and logical partition tool (`37.0.3-16887417`). Supports USB (`nusb`), TCP (`FB01`), and UDP transports, automatic sparse splitting (`-S`), `AVB0` `vbmeta` patching (`--disable-verity`, `--disable-verification`), `boot.img` (`v0`–`v4`) & `vendor_boot.img` (`v3`–`v4`) live repacking, `format:ext4` / `format:f2fs`, `liblp` dynamic partitions (`create/delete/resize-logical-partition`, `wipe-super`), `snapshot-update`, `flashall`, and `update`. |
-| **`mke2fs`** | [`crates/mke2fs`](crates/mke2fs) | Pure-Rust Ext2 / Ext3 / Ext4 + JBD2 journal formatter (`1.47.2` CLI compatible). Supports `-E android_sparse`, `-O casefold`, `-b 1024/2048/4096`, multi-group metadata layout, and `-d <root_dir>` recursive directory tree population. |
-| **`make_f2fs`** | [`crates/make_f2fs`](crates/make_f2fs) | Pure-Rust F2FS `v1.16.0` formatter supporting raw and Android sparse (`-S`) output, user/group/project quotas (`-q`), casefolding (`-C utf8`), encryption, compression, extra attributes, and verity. |
-| **`make_f2fs_casefold`** | [`crates/make_f2fs_casefold`](crates/make_f2fs_casefold) | Pure-Rust F2FS `v1.16.0` formatter pre-configured with `casefold` (`utf8`), `quota`, and `prjquota` defaults. |
+| **`adb`** | [`crates/adb`](crates/adb) | Android Debug Bridge CLI client & TCP `5037` host server daemon (`1.0.41` / `37.0.3-16887417`). Supports USB (`nusb`) & TCP `adbd` multiplexing, RSA-2048 `adb keygen`, `A_CNXN` / `A_AUTH`, `shell,v2:`, recursive `push`/`pull`/`sync` (`STAT`/`STA2`, `LIST`/`DENT` & `LST2`/`DNT2`, `SEND`/`RECV`, `SND2`/`RCV2` with `Brotli`, `LZ4F`, `Zstd`), `install`/`install-multiple`/`install-multi-package`, `forward`, `reverse`, `logcat`, `bugreport`, `sideload`/`sideload-host`, `root`, and `remount`. |
+| **`fastboot`** | [`crates/fastboot`](crates/fastboot) | Android Fastboot flashing, bootloader, and logical partition tool (`37.0.3-16887417`). Supports USB (`nusb`), TCP (`FB01`), and UDP transports, sparse splitting (`-S`), `AVB0` `vbmeta` patching (`--disable-verity`, `--disable-verification`), `boot.img` & `vendor_boot.img` live repacking, `format:ext4` / `format:f2fs`, `liblp` dynamic partitions, `snapshot-update`, `flashall`, and `update`. |
+| **`mke2fs`** | [`crates/mke2fs`](crates/mke2fs) | Ext2 / Ext3 / Ext4 + JBD2 journal formatter (`1.47.2` CLI compatible). Supports `-E android_sparse`, `-O casefold`, `-b 1024/2048/4096`, multi-group metadata layout, and `-d <root_dir>` recursive directory tree population. |
+| **`make_f2fs`** | [`crates/make_f2fs`](crates/make_f2fs) | F2FS `v1.16.0` formatter supporting raw and Android sparse (`-S`) output, user/group/project quotas (`-q`), casefolding (`-C utf8`), encryption, compression, extra attributes, and verity. |
+| **`make_f2fs_casefold`** | [`crates/make_f2fs_casefold`](crates/make_f2fs_casefold) | F2FS `v1.16.0` formatter pre-configured with `casefold` (`utf8`), `quota`, and `prjquota` defaults. |
 | **`etc1tool`** | [`crates/etc1tool`](crates/etc1tool) | ETC1 texture encoder and decoder (`.png` <-> `.pkm`, `--encode`, `--encodeNoHeader`, `--decode`, `--showDifference`). |
 | **`hprof-conv`** | [`crates/hprof-conv`](crates/hprof-conv) | Dalvik / ART HPROF `1.0.3` to standard Java HPROF `1.0.2` heap dump converter. |
-| **`sqlite3`** | [`crates/sqlite3`](crates/sqlite3) | Pure-Rust MIT SQLite 3 interactive CLI shell supporting all standard output modes (`list`, `csv`, `column`, `line`, `html`, `insert`, `quote`, `tabs`) and dot-commands (`.dump`, `.schema`, `.tables`, `.indices`, `.import`, `.backup`, `.read`, `.output`), backed by bundled Public Domain SQLite via `rusqlite`. |
+| **`sqlite3`** | [`crates/sqlite3`](crates/sqlite3) | SQLite 3 CLI shell supporting standard output modes (`list`, `csv`, `column`, `line`, `html`, `insert`, `quote`, `tabs`) and dot-commands (`.dump`, `.schema`, `.tables`, `.indices`, `.import`, `.backup`, `.read`, `.output`), backed by `rusqlite`. |
 
 ### 7 Core Library Crates
 
@@ -51,10 +50,10 @@ Every tool and library in this workspace is written in idiomatic Rust with full 
 
 ---
 
-## Related Pure-Rust Projects & Upstream AOSP References
+## Related Projects & Upstream AOSP References
 
-### Pure-Rust Ecosystem
-- **[`ahsanihlwn/brotli-rs`](https://github.com/ahsanihlwn/brotli-rs)**: Pure-Rust, MIT-licensed implementation of Google's Brotli (`v1.2.0`, RFC 7932) compression and decompression library, integrated into `crates/adb` for `sendrecv_v2_brotli` (`adb push/pull -z brotli`).
+### Ecosystem
+- **[`ahsanihlwn/brotli-rs`](https://github.com/ahsanihlwn/brotli-rs)**: Native Rust implementation of Brotli (`v1.2.0`, RFC 7932) compression and decompression, used by `crates/adb` for `sendrecv_v2_brotli` (`adb push/pull -z brotli`).
 
 ### Upstream AOSP Repositories
 - **AOSP Platform Build & SDK Packaging**: [`platform/development` (`build/Android.bp`)](https://android.googlesource.com/platform/development/+/master/build/Android.bp) & [`platform/build`](https://android.googlesource.com/platform/build)
@@ -62,8 +61,8 @@ Every tool and library in this workspace is written in idiomatic Rust with full 
 - **Fastboot, `libsparse`, `mkbootimg`, and `liblp`**: [`platform/system/core`](https://android.googlesource.com/platform/system/core)
 - **Filesystem & System Extras**: [`platform/system/extras`](https://android.googlesource.com/platform/system/extras/)
 - **Android Verified Boot (`libavb`)**: [`platform/external/avb`](https://android.googlesource.com/platform/external/avb)
-- **F2FS On-Disk Format Specification**: [`platform/external/f2fs-tools`](https://android.googlesource.com/platform/external/f2fs-tools)
-- **Ext4 & JBD2 On-Disk Format Specification**: [`platform/external/e2fsprogs`](https://android.googlesource.com/platform/external/e2fsprogs)
+- **F2FS On-Disk Format**: [`platform/external/f2fs-tools`](https://android.googlesource.com/platform/external/f2fs-tools)
+- **Ext4 & JBD2 On-Disk Format**: [`platform/external/e2fsprogs`](https://android.googlesource.com/platform/external/e2fsprogs)
 - **Dalvik `hprof-conv` & Native `etc1tool`**: [`platform/dalvik`](https://android.googlesource.com/platform/dalvik) & [`platform/frameworks/native`](https://android.googlesource.com/platform/frameworks/native)
 
 ---
@@ -79,7 +78,7 @@ Every tool and library in this workspace is written in idiomatic Rust with full 
 cargo build --workspace --release --bins
 ```
 
-The compiled binaries will be placed in `target/release/`:
+Compiled binaries are written to `target/release/`:
 - `adb` (`adb.exe` on Windows)
 - `fastboot` (`fastboot.exe` on Windows)
 - `mke2fs` (`mke2fs.exe` on Windows)
@@ -89,11 +88,11 @@ The compiled binaries will be placed in `target/release/`:
 - `hprof-conv` (`hprof-conv.exe` on Windows)
 - `sqlite3` (`sqlite3.exe` on Windows)
 
-Along with SDK configuration files in [`config/`](config):
+Default configuration files live in [`config/`](config):
 - [`config/source.properties`](config/source.properties) (`Pkg.Revision=37.0.3`)
 - [`config/mke2fs.conf`](config/mke2fs.conf)
 
-### Run Workspace Tests
+### Run Tests & Lint
 
 ```bash
 cargo test --workspace
@@ -104,4 +103,4 @@ cargo clippy --workspace --all-targets -- -D warnings
 
 ## License
 
-Licensed under the **MIT License**. See [LICENSE](LICENSE) for full details.
+This project is licensed under the [MIT License](LICENSE).
