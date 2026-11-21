@@ -7,7 +7,7 @@ use hprof_conv::{convert, ConvertOptions};
 fn print_usage() {
     eprintln!(
         "\
-Usage: hprof-conv [-z] infile outfile
+Usage: hprof-conf [-z] infile outfile
 
   -z: exclude non-app heaps, such as Zygote
 
@@ -20,7 +20,7 @@ Version 2.0 (the \"License\"). You may obtain a copy of the License at
 
      http://www.apache.org/licenses/LICENSE-2.0
 
-See the associated NOTICE file for further details."
+See the associated NOTICE file for this software for further details."
     );
 }
 

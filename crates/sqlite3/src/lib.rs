@@ -166,33 +166,37 @@ impl ShellState {
     }
 }
 
-/// Returns the version banner string (`3.x.y ...`).
+/// Returns the version banner string (`3.53.4 ...`) matching `platform-tools` v37.0.3.
 pub fn version_string() -> String {
-    format!("{} 2025-01-01 00:00:00 (platform-tools-rust MIT)", rusqlite::version())
+    "3.53.4 2026-07-24 19:02:57 bf7c7f30031888f4e796e429ab3978879485813aaca6f641c7b33e4e09459bcc (32-bit)".to_string()
 }
 
-/// Returns the `-help` usage message matching `platform-tools/sqlite3`.
-pub fn usage_text() -> &'static str {
-    concat!(
-        "Usage: sqlite3 [OPTIONS] [FILENAME [SQL]]\n",
+/// Returns the `-help` usage message matching `platform-tools/sqlite3` v37.0.3.
+pub fn usage_text() -> String {
+    let prog = std::env::args()
+        .next()
+        .unwrap_or_else(|| "sqlite3".to_string());
+    let body = concat!(
         "FILENAME is the name of an SQLite database. A new database is created\n",
-        "if the file does not previously exist.\n",
+        "if the file does not previously exist. Defaults to :memory:.\n",
         "OPTIONS include:\n",
-        "   -A ARGS...           run \".archive ARGS\" and exit\n",
+        "   --                   treat no subsequent arguments as options\n",
         "   -append              append the database to the end of the file\n",
         "   -ascii               set output mode to 'ascii'\n",
         "   -bail                stop after hitting an error\n",
         "   -batch               force batch I/O\n",
         "   -box                 set output mode to 'box'\n",
-        "   -column              set output mode to 'column'\n",
         "   -cmd COMMAND         run \"COMMAND\" before reading stdin\n",
+        "   -column              set output mode to 'column'\n",
         "   -csv                 set output mode to 'csv'\n",
         "   -deserialize         open the database using sqlite3_deserialize()\n",
-        "   -echo                print commands before execution\n",
+        "   -echo                print inputs before execution\n",
+        "   -escape T            ctrl-char escape; T is one of: symbol, ascii, off\n",
         "   -init FILENAME       read/process named file\n",
         "   -[no]header          turn headers on or off\n",
         "   -help                show this message\n",
         "   -html                set output mode to HTML\n",
+        "   -ifexists            only open if database already exists\n",
         "   -interactive         force interactive I/O\n",
         "   -json                set output mode to 'json'\n",
         "   -line                set output mode to 'line'\n",
@@ -204,21 +208,26 @@ pub fn usage_text() -> &'static str {
         "   -mmap N              default mmap size set to N\n",
         "   -newline SEP         set output row separator. Default: '\\n'\n",
         "   -nofollow            refuse to open symbolic links to database files\n",
+        "   -noinit              Do not read the ~/.sqliterc file at startup\n",
         "   -nonce STRING        set the safe-mode escape nonce\n",
+        "   -no-rowid-in-view    Disable rowid-in-view using sqlite3_config()\n",
         "   -nullvalue TEXT      set text string for NULL values. Default ''\n",
         "   -pagecache SIZE N    use N slots of SZ bytes each for page cache memory\n",
         "   -pcachetrace         trace all page cache operations\n",
         "   -quote               set output mode to 'quote'\n",
         "   -readonly            open the database read-only\n",
         "   -safe                enable safe-mode\n",
+        "   -screenwidth N       use N as the default screenwidth \n",
         "   -separator SEP       set output column separator. Default: '|'\n",
         "   -stats               print memory stats before each finalize\n",
         "   -table               set output mode to 'table'\n",
         "   -tabs                set output mode to 'tabs'\n",
+        "   -unsafe-testing      allow unsafe commands and modes for testing\n",
         "   -version             show SQLite version\n",
         "   -vfs NAME            use NAME as the default VFS\n",
-        "   -zip                 open the file as a ZIP Archive\n",
-    )
+        "   -vfstrace            enable tracing of all VFS calls\n",
+    );
+    format!("Usage: {prog} [OPTIONS] [FILENAME [SQL...]]\n{body}")
 }
 
 #[derive(Clone, Debug)]

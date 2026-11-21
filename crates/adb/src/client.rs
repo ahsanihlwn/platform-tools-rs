@@ -945,14 +945,57 @@ async fn execute_command(cfg: &AdbCliConfig) -> Result<i32, AdbError> {
             Ok(0)
         }
         AdbCommand::Sync {
-            partition: _,
-            list_only: _,
-            dry_run: _,
-            quiet: _,
+            partition,
+            list_only,
+            dry_run,
+            quiet,
         } => {
-            let _out_dir = std::env::var("ANDROID_PRODUCT_OUT").map_err(|_| {
+            let out_dir = std::env::var("ANDROID_PRODUCT_OUT").map_err(|_| {
                 AdbError::InvalidArgument("ANDROID_PRODUCT_OUT not set".into())
             })?;
+            let parts: Vec<&str> = match partition.as_deref() {
+                None | Some("all") => vec![
+                    "system",
+                    "vendor",
+                    "oem",
+                    "data",
+                    "product",
+                    "system_ext",
+                    "odm",
+                    "vendor_dlkm",
+                    "odm_dlkm",
+                    "system_dlkm",
+                ],
+                Some(p) => vec![p],
+            };
+            let comp = resolve_sync_compression(cfg, None);
+            let mut sync_stream = open_device_service(cfg, &cfg.target, "sync:")?;
+            let mut total_bytes = 0u64;
+            let mut total_files = 0usize;
+            for part in parts {
+                let local_part = Path::new(&out_dir).join(part);
+                if !local_part.is_dir() {
+                    continue;
+                }
+                let remote_part = format!("/{part}");
+                if *list_only {
+                    println!("syncing {remote_part} from {}", local_part.display());
+                    continue;
+                }
+                let (b, c) = sync_push_recursive(
+                    &mut sync_stream,
+                    &local_part,
+                    &remote_part,
+                    *dry_run,
+                    comp,
+                )?;
+                total_bytes += b;
+                total_files += c;
+            }
+            sync_quit(&mut sync_stream);
+            if !*quiet && !*list_only {
+                eprintln!("sync: {total_files} file pushed, 0 skipped. ({total_bytes} bytes)");
+            }
             Ok(0)
         }
         AdbCommand::Shell { raw_mode, command } => run_shell_command(cfg, *raw_mode, command),
@@ -979,7 +1022,9 @@ async fn execute_command(cfg: &AdbCliConfig) -> Result<i32, AdbError> {
             } else {
                 format!("pm install {flags_str} \"{remote_tmp}\"")
             };
-            run_shell_command(cfg, false, &[pm_cmd])
+            let code = run_shell_command(cfg, false, &[pm_cmd])?;
+            let _ = run_shell_command(cfg, false, &[format!("rm -f \"{remote_tmp}\"")]);
+            Ok(code)
         }
         AdbCommand::InstallMultiple { flags, apks }
         | AdbCommand::InstallMultiPackage { flags, apks } => {
@@ -987,9 +1032,44 @@ async fn execute_command(cfg: &AdbCliConfig) -> Result<i32, AdbError> {
                 .iter()
                 .filter_map(|p| fs::metadata(p).ok().map(|m| m.len()))
                 .sum();
+            let comp = resolve_sync_compression(cfg, None);
+            let mut remote_tmps = Vec::new();
+            {
+                let mut sync_stream = open_device_service(cfg, &cfg.target, "sync:")?;
+                for (idx, apk) in apks.iter().enumerate() {
+                    let fname = apk
+                        .file_name()
+                        .map(|s| s.to_string_lossy().into_owned())
+                        .unwrap_or_else(|| format!("split_{idx}.apk"));
+                    let rtmp = format!("/data/local/tmp/{idx}_{fname}");
+                    let sz = sync_send_one_file(&mut sync_stream, apk, &rtmp, false, comp)?;
+                    remote_tmps.push((idx, fname, rtmp, sz));
+                }
+                sync_quit(&mut sync_stream);
+            }
             let flags_str = flags.join(" ");
-            let create_cmd = format!("pm install-create -S {total_size} {flags_str}");
-            run_shell_command(cfg, false, &[create_cmd])
+            let create_cmd = if flags_str.is_empty() {
+                format!("pm install-create -S {total_size}")
+            } else {
+                format!("pm install-create -S {total_size} {flags_str}")
+            };
+            let create_out = capture_shell_stdout(cfg, &create_cmd)?;
+            if let Some(session_id) = parse_bracketed_session_id(&create_out) {
+                for (idx, fname, rtmp, sz) in &remote_tmps {
+                    let write_cmd =
+                        format!("pm install-write -S {sz} {session_id} {idx}_{fname} \"{rtmp}\"");
+                    let _ = run_shell_command(cfg, false, &[write_cmd])?;
+                }
+                let commit_code =
+                    run_shell_command(cfg, false, &[format!("pm install-commit {session_id}")])?;
+                for (_, _, rtmp, _) in &remote_tmps {
+                    let _ = run_shell_command(cfg, false, &[format!("rm -f \"{rtmp}\"")]);
+                }
+                Ok(commit_code)
+            } else {
+                print!("{create_out}");
+                Ok(0)
+            }
         }
         AdbCommand::Uninstall { keep_data, package } => {
             let cmd = if *keep_data {
@@ -1000,8 +1080,36 @@ async fn execute_command(cfg: &AdbCliConfig) -> Result<i32, AdbError> {
             run_shell_command(cfg, false, &[cmd])
         }
         AdbCommand::Bugreport(path_opt) => {
-            let _ = path_opt;
-            run_shell_command(cfg, false, &["bugreportz".to_string()])
+            let out = capture_shell_stdout(cfg, "bugreportz")?;
+            print!("{out}");
+            if let Some(remote_zip) = out
+                .lines()
+                .find_map(|l| l.trim().strip_prefix("OK:"))
+            {
+                let local_dest = match path_opt {
+                    Some(p) if p.is_dir() => {
+                        let fname = remote_zip.rsplit('/').next().unwrap_or("bugreport.zip");
+                        p.join(fname)
+                    }
+                    Some(p) => {
+                        if p.extension().is_none() {
+                            p.with_extension("zip")
+                        } else {
+                            p.clone()
+                        }
+                    }
+                    None => {
+                        let fname = remote_zip.rsplit('/').next().unwrap_or("bugreport.zip");
+                        Path::new(fname).to_path_buf()
+                    }
+                };
+                let comp = resolve_sync_compression(cfg, None);
+                let mut sync_stream = open_device_service(cfg, &cfg.target, "sync:")?;
+                let _ = sync_recv_one_file(&mut sync_stream, remote_zip.trim(), &local_dest, comp)?;
+                sync_quit(&mut sync_stream);
+                println!("Bug report copied to {}", local_dest.display());
+            }
+            Ok(0)
         }
         AdbCommand::Jdwp => run_device_stream_to_stdout(cfg, "jdwp"),
         AdbCommand::Logcat(log_args) => {
@@ -1063,13 +1171,7 @@ async fn execute_command(cfg: &AdbCliConfig) -> Result<i32, AdbError> {
             let _ = open_device_service(cfg, &cfg.target, &svc)?;
             Ok(0)
         }
-        AdbCommand::Sideload(pkg_path) => {
-            let data = fs::read(pkg_path)?;
-            let svc = format!("sideload:{}:65536", data.len());
-            let mut stream = open_device_service(cfg, &cfg.target, &svc)?;
-            stream.write_all(&data)?;
-            Ok(0)
-        }
+        AdbCommand::Sideload(pkg_path) => run_sideload_host(cfg, pkg_path),
         AdbCommand::Root => run_device_stream_to_stdout(cfg, "root:"),
         AdbCommand::Unroot => run_device_stream_to_stdout(cfg, "unroot:"),
         AdbCommand::Usb => run_device_stream_to_stdout(cfg, "usb:"),
@@ -1091,6 +1193,78 @@ async fn execute_command(cfg: &AdbCliConfig) -> Result<i32, AdbError> {
         AdbCommand::HostFeatures => {
             let s = query_server_string(cfg, "host:host-features", true)?;
             println!("{s}");
+            Ok(0)
+        }
+    }
+}
+
+fn capture_shell_stdout(cfg: &AdbCliConfig, cmd_str: &str) -> Result<String, AdbError> {
+    if device_supports_feature(cfg, "shell_v2") {
+        let service = format!("shell,v2:{cmd_str}");
+        let mut stream = open_device_service(cfg, &cfg.target, &service)?;
+        let mut out = Vec::new();
+        while let Some((id, payload)) = read_shell_v2_packet_sync(&mut stream)? {
+            match id {
+                SHELL_V2_STDOUT | SHELL_V2_STDERR => out.extend_from_slice(&payload),
+                SHELL_V2_EXIT => break,
+                _ => {}
+            }
+        }
+        return Ok(String::from_utf8_lossy(&out).into_owned());
+    }
+    let service = format!("shell:{cmd_str}");
+    let mut stream = open_device_service(cfg, &cfg.target, &service)?;
+    let mut out = Vec::new();
+    stream.read_to_end(&mut out)?;
+    Ok(String::from_utf8_lossy(&out).into_owned())
+}
+
+fn parse_bracketed_session_id(text: &str) -> Option<String> {
+    let start = text.find('[')?;
+    let end = text[start + 1..].find(']')? + start + 1;
+    let id = text[start + 1..end].trim();
+    if !id.is_empty() && id.chars().all(|c| c.is_ascii_digit()) {
+        Some(id.to_string())
+    } else {
+        None
+    }
+}
+
+fn run_sideload_host(cfg: &AdbCliConfig, pkg_path: &Path) -> Result<i32, AdbError> {
+    const SIDELOAD_CHUNK_SIZE: usize = 65536;
+    let data = fs::read(pkg_path)?;
+    let total_size = data.len();
+    let host_svc = format!("sideload-host:{total_size}:{SIDELOAD_CHUNK_SIZE}");
+    match open_device_service(cfg, &cfg.target, &host_svc) {
+        Ok(mut stream) => {
+            let mut req_buf = [0u8; 8];
+            while stream.read_exact(&mut req_buf).is_ok() {
+                let cmd_str = String::from_utf8_lossy(&req_buf);
+                if cmd_str == "DONEDONE" {
+                    println!("Total xfer: 1.00x");
+                    return Ok(0);
+                }
+                if cmd_str == "FAILFAIL" {
+                    return Err(AdbError::RemoteFail("sideload failed on device".into()));
+                }
+                let block_idx: usize = cmd_str.trim().parse().map_err(|_| {
+                    AdbError::Protocol(format!("invalid sideload block request '{cmd_str}'"))
+                })?;
+                let offset = block_idx.saturating_mul(SIDELOAD_CHUNK_SIZE);
+                if offset < total_size {
+                    let end = (offset + SIDELOAD_CHUNK_SIZE).min(total_size);
+                    stream.write_all(&data[offset..end])?;
+                    stream.flush()?;
+                }
+            }
+            Ok(0)
+        }
+        Err(_) => {
+            // Fallback to legacy `sideload:<size>` stream
+            let svc = format!("sideload:{total_size}");
+            let mut stream = open_device_service(cfg, &cfg.target, &svc)?;
+            stream.write_all(&data)?;
+            stream.flush()?;
             Ok(0)
         }
     }

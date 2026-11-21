@@ -231,9 +231,15 @@ pub fn version_output() -> String {
     )
 }
 
+#[cfg(windows)]
+const LOCAL_AGENT_HELP_LINE: &str = "";
+#[cfg(not(windows))]
+const LOCAL_AGENT_HELP_LINE: &str =
+    "     --local-agent: locate agent files from local source build (instead of SDK location)\n";
+
 /// Returns the static usage body of `adb --help` matching `platform-tools/adb` v37.0.3-16887417.
-pub fn help_body() -> &'static str {
-    concat!(
+pub fn help_body() -> String {
+    let prefix = concat!(
         "global options:\n",
         " -a                       listen on all network interfaces, not just localhost\n",
         " -d                       use USB device (error if multiple devices connected)\n",
@@ -337,7 +343,8 @@ pub fn help_body() -> &'static str {
         "     --force-agent: force update of deployment agent when using fast deploy\n",
         "     --date-check-agent: update deployment agent when local version is newer and using fast deploy\n",
         "     --version-check-agent: update deployment agent when local version has different version code and using fast deploy\n",
-        "     --local-agent: locate agent files from local source build (instead of SDK location)\n",
+    );
+    let suffix = concat!(
         "     (See also `adb shell pm help` for more options.)\n",
         " uninstall [-k] PACKAGE\n",
         "     remove this app package from the device\n",
@@ -401,7 +408,8 @@ pub fn help_body() -> &'static str {
         "\n",
         "Online documentation: https://android.googlesource.com/platform/packages/modules/adb/+/refs/heads/main/docs/user/adb.1.md\n",
         "\n",
-    )
+    );
+    format!("{prefix}{LOCAL_AGENT_HELP_LINE}{suffix}")
 }
 
 /// Returns the full `adb --help` output (version header + blank line + help body).

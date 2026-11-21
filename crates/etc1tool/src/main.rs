@@ -47,7 +47,7 @@ fn run() -> i32 {
                 match arg.as_str() {
                     "--help" => {
                         print_usage(prog);
-                        return 0;
+                        return 1;
                     }
                     "--encode" => {
                         if mode.is_some() {
